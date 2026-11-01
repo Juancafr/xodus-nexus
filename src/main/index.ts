@@ -62,6 +62,7 @@ import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanc
 import { ShortcutLaunch } from './shortcut-launch.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
+import { forgetSavedAccount, listSavedAccounts, useSavedAccount } from './saved-accounts.js';
 import { AccountRefresh, readAccount } from './account-refresh.js';
 import { AccountLibrary } from './account-library.js';
 import { RecentPcGamePass } from './gamepass-recent.js';
@@ -247,6 +248,7 @@ let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 let shortcuts: GameShortcuts;
 let accountProfile: AccountProfile;
 let licenseProfile: AccountProfile | undefined;
+let savedAccounts: string[] = [];
 let preparingLaunch = false;
 let preparingInstall = false;
 let preparingContent = false;
@@ -318,7 +320,7 @@ function snapshot(): AppSnapshot {
     downloads: structuredClone(store.downloads.map(task => downloadCancellations.has(task.id)
       ? { ...task, cancelling: true, canPause: false, phase: 'Cancelling download and checking files…' } : task)),
     settings: structuredClone(store.settings),
-    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: accountProfile?.value?.subscription }),
+    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, saved: savedAccounts, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: accountProfile?.value?.subscription }),
     launcherUpdate: structuredClone(launcherUpdater.state),
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
@@ -514,6 +516,7 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
       status.capabilities.achievements ? status.binaryPath : undefined);
     await accountProfile?.select(authState.stored === true ? authState.player ?? authState.username : undefined,
       status.capabilities.profile ? status.binaryPath : undefined, emit);
+    savedAccounts = status.capabilities.savedAccounts && status.binaryPath ? (await listSavedAccounts(status.binaryPath).catch(() => null))?.accounts ?? [] : [];
     await licenseProfile?.select(authState.stored === true && authState.player ? authState.username : undefined,
       status.capabilities.licenseProfile ? status.binaryPath : undefined, emit);
   }, () => key === accountRefreshKey() && (!authState.running || afterAuth));
@@ -901,7 +904,7 @@ async function runDownload(task: DownloadTask, binary: string, market: string, u
             delete gameUpdates[updateGame.id];
           }
         }
-        else await store.upsertGame({ ...inspected, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
+        else await store.upsertGame({ ...inspected, licenseAccount: authState.username, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
       } catch (error) {
         if (updateGame) await refreshIncompleteUpdate(updateGame).catch(() => {});
         if (updateGame && task.status === 'complete') {
@@ -1056,6 +1059,13 @@ async function prepareGameLaunch(id: string): Promise<void> {
     if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
   }
   if (await refreshIncompleteUpdate(game)) { emitSnapshot(); throw Error(INCOMPLETE_UPDATE_MESSAGE); }
+  if (game.licenseAccount && authState.username && game.licenseAccount !== authState.username
+      && savedAccounts.includes(game.licenseAccount) && backend.current.binaryPath && backend.current.capabilities.savedAccounts) {
+    // The game was installed with another saved Store account: use that one, no sign-in needed.
+    await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+    accountRefresh.invalidate();
+    await refreshAccount(false, true);
+  }
   const inspected = await inspectGameDirectory(game.path);
   await store.patchGame(id, {
     installState: inspected.installState,
@@ -1477,6 +1487,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('login', () => {});
   ipcMain.handle('logout', () => {});
+  ipcMain.handle('use-account', () => {});
+  ipcMain.handle('forget-account', () => {});
   ipcMain.handle('offline-permissions', () => ({ enabled: false, requestSuccess: true, remainingToggles: 2, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
@@ -1684,6 +1696,20 @@ function registerIpc(): void {
   ipcMain.handle('copy-diagnostic-log', async (_event, id: string) => {
     if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
     await copyDiagnosticFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
+  });
+  ipcMain.handle('use-account', async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !backend.current.binaryPath || !backend.current.capabilities.savedAccounts) throw new Error('Saved accounts are not available.');
+    ensureIdle();
+    await useSavedAccount(backend.current.binaryPath, name);
+    accountRefresh.invalidate();
+    await refreshAccount(true, true);
+  });
+  ipcMain.handle('forget-account', async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !backend.current.binaryPath || !backend.current.capabilities.savedAccounts) throw new Error('Saved accounts are not available.');
+    ensureIdle();
+    await forgetSavedAccount(backend.current.binaryPath, name);
+    accountRefresh.invalidate();
+    await refreshAccount(true, true);
   });
   ipcMain.handle('login', (_event, player?: unknown) => player === true ? requestAuth('login', true) : requestAuth('login'));
   ipcMain.handle('logout', (_event, player?: unknown) => player === true ? requestAuth('logout', true) : requestAuth('logout'));

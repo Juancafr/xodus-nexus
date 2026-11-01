@@ -1029,7 +1029,17 @@ function backendSetupHint(backend: AppSnapshot['backend']): string {
 }
 
 function PasskeySignInNotice() {
-  return <p className="passkey-sign-in-notice">{ui("ui.passkey_sign_in_requires_google_chrome_installed_f583e8a")}</p>;
+  return {(data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
+      <span className="overline">{ui("ui.saved_store_accounts_a1c4e72")}</span>
+      {data.auth.saved!.map(name => <div key={name} className="button-row" role="listitem">
+        <strong>{name}</strong>
+        {name === data.auth.username ? <span className="status-label ready">{ui("ui.account_in_use_5b09d3f")}</span>
+          : <button className="secondary" disabled={data.auth.running} onClick={() => invoke('use-account', () => window.launcher.useAccount(name), ui("ui.account_switched_6a2e91c"))}>{ui("ui.use_this_account_e71c0a8")}</button>}
+        <button className="secondary" disabled={data.auth.running} onClick={() => invoke('forget-account', () => window.launcher.forgetAccount(name), ui("ui.account_forgotten_c05d7e3"))}>{ui("ui.forget_account_3d8f6b1")}</button>
+      </div>)}
+      <small>{ui("ui.saved_store_accounts_help_94be2d0")}</small>
+    </div> : null}
+    <p className="passkey-sign-in-notice">{ui("ui.passkey_sign_in_requires_google_chrome_installed_f583e8a")}</p>;
 }
 
 export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (value: Toast) => void }) {

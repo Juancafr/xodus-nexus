@@ -111,6 +111,8 @@ const api: LauncherApi = {
   saveDiagnosticReport: content => ipcRenderer.invoke('save-diagnostic-report', content),
   login: (player?: boolean) => ipcRenderer.invoke('login', player === true),
   logout: (player?: boolean) => ipcRenderer.invoke('logout', player === true),
+  useAccount: (name: string) => ipcRenderer.invoke('use-account', name),
+  forgetAccount: (name: string) => ipcRenderer.invoke('forget-account', name),
   offlinePermissions: () => ipcRenderer.invoke('offline-permissions'),
   setOfflinePermissions: (enabled: boolean) => ipcRenderer.invoke('set-offline-permissions', enabled),
   searchCatalog: (query: string, cursor?: string) => ipcRenderer.invoke('catalog-search', query, cursor),

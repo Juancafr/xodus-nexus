@@ -25,6 +25,7 @@ export interface BackendCapabilities {
   /** `login --player` / `logout --player`: a second, separate Xbox player account. */
   playerAccount?: boolean;
   licenseProfile?: boolean;
+  savedAccounts?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;
@@ -43,6 +44,7 @@ export interface AuthStatus {
   gamertag?: string;
   avatarDataUrl?: string;
   licenseAvatarDataUrl?: string;
+  saved?: string[];
   subscription?: GamePassSubscription;
   lastResult?: 'success' | 'failed';
   lastAction?: 'login' | 'logout';
@@ -118,6 +120,7 @@ export interface Game {
   publisher?: string;
   installedVersion?: string;
   packageName?: string;
+  licenseAccount?: string; // Store account the game was installed with.
   executable?: string;
   winePath?: string; // Legacy saved field; ignored for launch. The runtime is global.
   launchArgs?: string;
@@ -585,6 +588,8 @@ export interface LauncherApi {
   saveDiagnosticReport(content: string): Promise<boolean>;
   login(player?: boolean): Promise<void>;
   logout(player?: boolean): Promise<void>;
+  useAccount(name: string): Promise<void>;
+  forgetAccount(name: string): Promise<void>;
   offlinePermissions(): Promise<OfflinePermissions>;
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
