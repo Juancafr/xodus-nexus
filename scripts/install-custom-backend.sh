@@ -33,7 +33,8 @@ python3 - "$root/current.json" "$target/xodus-cli" <<'PY'
 import json, sys, datetime
 path, binary = sys.argv[1:3]
 pointer = {"commit": "custom-multi-account", "binaryPath": binary,
-           "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "delivery": "local"}
+           "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "delivery": "release",
+           "linuxRunPatch": "linux-run-v25", "version": "99.0.0"}
 with open(path, "w") as handle:
     json.dump(pointer, handle, indent=2)
 PY
