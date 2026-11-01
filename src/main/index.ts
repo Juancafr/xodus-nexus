@@ -636,7 +636,6 @@ async function runAuth(command: 'login' | 'logout', player = false): Promise<voi
     const view = fallbackAuthViewFactory(request => authViewFactory(mainWindow ?? undefined, undefined, request, nativeText), () => browserAuthViewFactory());
     if (shutdownStarted) throw Error('The launcher is closing.');
     await accountProfile.select(undefined);
-    await licenseProfile?.select(undefined);
     if (shutdownStarted) throw Error('The launcher is closing.');
     const tracked = command === 'login' ? (player ? startAuthTransport(binary, view, process.env, undefined, true) : startAuthTransport(binary, view))
       // Explicit sign-out removes the local device registration too. Ordinary
