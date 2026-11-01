@@ -1,0 +1,78 @@
+# TEMPORARY, for this fork only: builds the launcher AppImage and the patched
+# backend binaries so they can be tried on a Steam Deck. It runs when the pull
+# request in the fork gets the "test-build" label. Drop this file before sending
+# a branch upstream.
+name: Test build (fork only)
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    if: github.event.label.name == 'test-build'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read pinned Rust version
+        run: echo "BACKEND_RUST=$(node -p 'require("./assets/backend-source.lock.json").rust')" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.BACKEND_RUST }}
+      - name: Install native build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libssl-dev protobuf-compiler libdbus-1-dev dbus-daemon
+      - name: Fetch pinned source and apply every Nexus patch in order
+        run: |
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const lock = require("./assets/backend-source.lock.json");
+            const run = (cwd, ...a) => execFileSync(a[0], a.slice(1), { cwd, stdio: "inherit" });
+            run(".", "git", "clone", "--no-checkout", lock.repository, "source");
+            run("source", "git", "checkout", "--detach", lock.commit);
+            for (const p of lock.patches) run("source", "git", "apply", `../assets/${p.file}`);
+          '
+      - name: Build the two binaries
+        working-directory: source
+        run: cargo build --release --locked --no-default-features -p xodus-cli -p xodus-service
+      - name: Collect
+        run: |
+          mkdir backend-custom
+          cp source/target/release/xodus-cli source/target/release/xodus-service scripts/install-custom-backend.sh backend-custom/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-custom
+          path: backend-custom/*
+          if-no-files-found: error
+          retention-days: 7
+
+  launcher:
+    if: github.event.label.name == 'test-build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check and build the launcher
+        run: npm run build
+      - name: Package the AppImage
+        run: npx --no-install electron-builder --linux AppImage --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-appimage
+          path: release/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
