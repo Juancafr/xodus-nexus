@@ -954,6 +954,14 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <PasskeySignInNotice />
     </section>
 
+    {caps.playerAccount && data.auth.stored === true ? <section className="settings-card account-card">
+      <div className="settings-heading"><div><span className="overline">{ui("ui.xbox_player_account_021c236")}</span><h2>{data.auth.player ?? ui("ui.no_separate_player_account_44980b5")}</h2><p>{ui("ui.player_account_help_1d6f365")}</p></div></div>
+      <div className="button-row">
+        <button className="primary" disabled={data.auth.running} onClick={() => invoke('login-player', () => window.launcher.login(true), ui("ui.player_account_signed_in_ac36aa2"))}>{ui("ui.sign_in_player_account_c15aa58")}</button>
+        {data.auth.player ? <button className="secondary" disabled={data.auth.running} onClick={() => invoke('logout-player', () => window.launcher.logout(true), ui("ui.player_account_signed_out_6752e8f"))}>{ui("ui.sign_out_player_account_013bd34")}</button> : null}
+      </div>
+    </section> : null}
+
     {caps.offlinePc && !data.auth.running ? <OfflinePermissionsCard key={`${data.auth.username}:${data.auth.stored}:${data.backend.binaryPath}:${data.settings.runtimeRoot}`} toast={toast} signedIn={data.auth.stored === true} /> : null}
 
     <section className="settings-card">

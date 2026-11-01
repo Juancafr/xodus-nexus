@@ -22,6 +22,8 @@ export interface BackendCapabilities {
   offlinePc?: boolean;
   /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
   offlineLaunch?: boolean;
+  /** `login --player` / `logout --player`: a second, separate Xbox player account. */
+  playerAccount?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;
@@ -35,6 +37,8 @@ export interface AuthStatus {
   running: boolean;
   stored: boolean | null;
   username?: string;
+  /** Separate Xbox player account, when the backend stores one next to the license account. */
+  player?: string;
   gamertag?: string;
   avatarDataUrl?: string;
   subscription?: GamePassSubscription;
@@ -577,8 +581,8 @@ export interface LauncherApi {
   readBackendDiagnosticLog(): Promise<DiagnosticLog>;
   createDiagnosticReport(gameId?: string): Promise<DiagnosticReport>;
   saveDiagnosticReport(content: string): Promise<boolean>;
-  login(): Promise<void>;
-  logout(): Promise<void>;
+  login(player?: boolean): Promise<void>;
+  logout(player?: boolean): Promise<void>;
   offlinePermissions(): Promise<OfflinePermissions>;
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;

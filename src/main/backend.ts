@@ -88,6 +88,10 @@ export class BackendManager {
           && designation?.code === 0 && /(?:^|\s)--license-cache(?:\s|$)/m.test(designation.output);
         capabilities.offlineLaunch = Boolean(capabilities.licenseCache && /(?:^|\s)--offline(?:\s|$)/m.test(launch.output));
       }
+      if (capabilities.login) {
+        const login = await run(binaryPath, ['login', '--help'], { maxOutput: 100_000 });
+        capabilities.playerAccount = login.code === 0 && /(?:^|\s)--player(?:\s|$)/m.test(login.output);
+      }
       return capabilities.login && capabilities.streaming ? capabilities : null;
     } catch (error) { if (error instanceof BackendPrerequisiteError) throw error; return null; }
   }
