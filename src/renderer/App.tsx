@@ -952,6 +952,16 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="account-note"><CircleAlert /><span>{uiText(data.auth.note)}</span></div>
       <KeyringSetup compact disabled={data.auth.running} />
       <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), ui("ui.xodus_sign_in_completed_8240737"))}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? ui("ui.sign_in_again_51fbe1d") : ui("ui.sign_in_with_xodus_252572f")}</button><button className="secondary" disabled={!caps.logout || data.auth.running || data.auth.stored === false} title={ui("ui.remove_saved_sign_in_credentials_and_local_devic_6485324")} onClick={() => invoke('logout', () => window.launcher.logout(), ui("ui.saved_sign_in_credentials_and_local_device_regis_c9738bd"))}>{ui("ui.sign_out_48f0d3d")}</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />{ui("ui.refresh_status_442c4b8")}</button></div>
+      {(data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
+      <span className="overline">{ui("ui.saved_store_accounts_a1c4e72")}</span>
+      {data.auth.saved!.map(name => <div key={name} className="button-row" role="listitem">
+        <strong>{name}</strong>
+        {name === data.auth.username ? <span className="status-label ready">{ui("ui.account_in_use_5b09d3f")}</span>
+          : <button className="secondary" disabled={data.auth.running} onClick={() => invoke('use-account', () => window.launcher.useAccount(name), ui("ui.account_switched_6a2e91c"))}>{ui("ui.use_this_account_e71c0a8")}</button>}
+        <button className="secondary" disabled={data.auth.running} onClick={() => invoke('forget-account', () => window.launcher.forgetAccount(name), ui("ui.account_forgotten_c05d7e3"))}>{ui("ui.forget_account_3d8f6b1")}</button>
+      </div>)}
+      <small>{ui("ui.saved_store_accounts_help_94be2d0")}</small>
+    </div> : null}
       <PasskeySignInNotice />
     </section>
 
@@ -1029,17 +1039,7 @@ function backendSetupHint(backend: AppSnapshot['backend']): string {
 }
 
 function PasskeySignInNotice() {
-  return {(data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
-      <span className="overline">{ui("ui.saved_store_accounts_a1c4e72")}</span>
-      {data.auth.saved!.map(name => <div key={name} className="button-row" role="listitem">
-        <strong>{name}</strong>
-        {name === data.auth.username ? <span className="status-label ready">{ui("ui.account_in_use_5b09d3f")}</span>
-          : <button className="secondary" disabled={data.auth.running} onClick={() => invoke('use-account', () => window.launcher.useAccount(name), ui("ui.account_switched_6a2e91c"))}>{ui("ui.use_this_account_e71c0a8")}</button>}
-        <button className="secondary" disabled={data.auth.running} onClick={() => invoke('forget-account', () => window.launcher.forgetAccount(name), ui("ui.account_forgotten_c05d7e3"))}>{ui("ui.forget_account_3d8f6b1")}</button>
-      </div>)}
-      <small>{ui("ui.saved_store_accounts_help_94be2d0")}</small>
-    </div> : null}
-    <p className="passkey-sign-in-notice">{ui("ui.passkey_sign_in_requires_google_chrome_installed_f583e8a")}</p>;
+  return <p className="passkey-sign-in-notice">{ui("ui.passkey_sign_in_requires_google_chrome_installed_f583e8a")}</p>;
 }
 
 export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (value: Toast) => void }) {
