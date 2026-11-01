@@ -1,0 +1,52 @@
+# TEMPORARY, for this fork only: compiles and tests the patched backend on a
+# pull request inside the fork. Drop this file before sending a branch upstream.
+name: Backend check (fork only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['assets/xodus-*.patch', assets/backend-source.lock.json, .github/workflows/backend-check.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read pinned Rust version
+        run: echo "BACKEND_RUST=$(node -p 'require("./assets/backend-source.lock.json").rust')" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.BACKEND_RUST }}
+      - name: Install native build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libssl-dev protobuf-compiler libdbus-1-dev dbus-daemon
+      - name: Fetch pinned source and apply every Nexus patch in order
+        run: |
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const lock = require("./assets/backend-source.lock.json");
+            const run = (cwd, ...a) => execFileSync(a[0], a.slice(1), { cwd, stdio: "inherit" });
+            run(".", "git", "clone", "--no-checkout", lock.repository, "source");
+            run("source", "git", "checkout", "--detach", lock.commit);
+            for (const p of lock.patches) run("source", "git", "apply", `../assets/${p.file}`);
+          '
+      - name: Compile and test
+        working-directory: source
+        run: |
+          cargo test --locked --no-default-features -p xodus credential_
+          cargo test --locked --no-default-features -p xodus-cli
+          cargo test --locked -p xodus-service store_
+          cargo test --locked -p xodus-service account_metadata_
+      - name: Release build of the two binaries
+        working-directory: source
+        run: cargo build --release --locked --no-default-features -p xodus-cli -p xodus-service
