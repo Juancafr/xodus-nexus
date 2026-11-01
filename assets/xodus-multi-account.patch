@@ -307,10 +307,28 @@ index 04e59f5..b159a8f 100644
      let Token::Legacy(legacy) = user_token else {
          return Err(other("Unspported user token".to_string()));
 diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
-index 80eea13..d9c9e60 100644
+index 80eea13..be34908 100644
 --- a/crates/xodus-cli/src/main.rs
 +++ b/crates/xodus-cli/src/main.rs
-@@ -94,6 +94,9 @@ enum SubCommand {
+@@ -85,6 +85,17 @@ enum SubCommand {
+         #[arg(short, long, help = "Path to a keyfile with content decryption keys")]
+         key_file: Option<String>,
+     },
++    #[command(about = "List, switch to or forget saved Store/Game Pass accounts")]
++    SavedAccounts {
++        #[arg(long, default_value_t = false)]
++        json: bool,
++        /// Make this saved account the active Store/Game Pass account.
++        #[arg(long = "use")]
++        use_account: Option<String>,
++        /// Forget this saved account.
++        #[arg(long)]
++        forget: Option<String>,
++    },
+     #[command(about = "Show whether Xodus has a stored Microsoft account")]
+     Account {
+         #[arg(long, default_value_t = false)]
+@@ -94,6 +105,9 @@ enum SubCommand {
      Profile {
          #[arg(long, default_value_t = false)]
          json: bool,
@@ -320,7 +338,7 @@ index 80eea13..d9c9e60 100644
      },
      #[command(about = "Extended native Nexus social services") ]
      NativeSocial {
-@@ -124,10 +127,15 @@ enum SubCommand {
+@@ -124,10 +138,15 @@ enum SubCommand {
          #[arg(long, default_value = "US")]
          market: String,
      },
@@ -337,11 +355,32 @@ index 80eea13..d9c9e60 100644
      },
      #[command(about = "Download and extract the game through streaming algorithm")]
      #[command(after_help = "Nexus capabilities: update-recovery-v1")]
-@@ -387,16 +395,18 @@ async fn main() -> ExitCode {
+@@ -321,6 +340,7 @@ async fn main() -> ExitCode {
+     let needs_device_credentials = !matches!(
+         args.command,
+         SubCommand::Account { .. }
++            | SubCommand::SavedAccounts { .. }
+             | SubCommand::Profile { .. }
+             | SubCommand::Social { .. }
+             | SubCommand::NativeSocial { .. }
+@@ -387,16 +407,31 @@ async fn main() -> ExitCode {
              .await
          }
          SubCommand::Library { json, market } => commands::library::run(&tokens, json, market).await,
 -        SubCommand::Account { json } => match tokens.get_user() {
++        SubCommand::SavedAccounts { json, use_account, forget } => {
++            if let Some(name) = use_account {
++                if tokens.activate_saved_account(&name).is_err() { eprintln!("Saved account not found."); return ExitCode::FAILURE; }
++            }
++            if let Some(name) = forget {
++                if tokens.forget_saved_account(&name).is_err() { eprintln!("Could not forget the saved account."); return ExitCode::FAILURE; }
++            }
++            let names = tokens.saved_accounts().unwrap_or_default();
++            let active = tokens.get_license_user().ok().map(|user| user.username);
++            if json { println!("{}", serde_json::json!({ "accounts": names, "active": active })); }
++            else { for name in names { println!("{name}"); } }
++            ExitCode::SUCCESS
++        }
 +        SubCommand::Account { json } => match tokens.get_license_user() {
              Ok(user) => {
                  if json {
@@ -364,7 +403,7 @@ index 80eea13..d9c9e60 100644
                  } else {
                      println!("{}", user.username);
                  }
-@@ -404,7 +414,11 @@ async fn main() -> ExitCode {
+@@ -404,7 +439,11 @@ async fn main() -> ExitCode {
              }
              Err(xodus::tokens::store::TokenStoreError::NotFound) => {
                  if json {
@@ -377,7 +416,7 @@ index 80eea13..d9c9e60 100644
                  } else {
                      println!("No stored Microsoft account");
                  }
-@@ -415,13 +429,13 @@ async fn main() -> ExitCode {
+@@ -415,13 +454,13 @@ async fn main() -> ExitCode {
                  ExitCode::FAILURE
              }
          },
@@ -458,14 +497,15 @@ index 16aa046..2a09942 100644
          }
      }
 diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
-index 6f14da1..3fac961 100644
+index 6f14da1..2902005 100644
 --- a/crates/xodus/src/tokens/manager.rs
 +++ b/crates/xodus/src/tokens/manager.rs
-@@ -13,6 +13,17 @@ mod keys {
+@@ -13,6 +13,18 @@ mod keys {
      pub const USER_TOKENS: &str = "user-tokens";
      pub const USER_INFO: &str = "user-DA";
      pub const USER_SESSION: &str = "user-session";
 +    pub const PLAYER_SESSION: &str = "player-session";
++    pub const SAVED_ACCOUNTS: &str = "saved-accounts";
 +}
 +
 +/// Which stored account answers a request. `License` is the account that owns
@@ -479,7 +519,7 @@ index 6f14da1..3fac961 100644
  }
  
  #[derive(serde::Serialize, serde::Deserialize)]
-@@ -144,42 +155,85 @@ impl TokenManager {
+@@ -144,21 +156,37 @@ impl TokenManager {
  
      // ---- User STS tokens (keyed by SOAP "applies_to" address) --------------
  
@@ -505,28 +545,26 @@ index 6f14da1..3fac961 100644
      pub fn save_user_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
 -        if let Some(mut session) = self.user_session()? {
 +        if let Some((key, mut session)) = self.session_for(Identity::Xbox)? {
-             session.tokens.insert(address, token);
-             return Self::write_verified(
-                 &*self.persistent,
--                keys::USER_SESSION,
-+                key,
-                 &serde_json::to_vec(&session)?,
-             );
-         }
-         Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
-     }
- 
-+    /// Renewed license-account tickets go back into the license session.
-+    pub fn save_license_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
-+        if let Some((key, mut session)) = self.session_for(Identity::License)? {
 +            session.tokens.insert(address, token);
-+            return Self::write_verified(&*self.persistent, key, &serde_json::to_vec(&session)?);
++            return self.write_session(key, &session);
 +        }
 +        Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
 +    }
 +
-     pub fn get_user_sts_token(&self) -> Result<Token, TokenStoreError> {
-         self.get_user_token_for(PASSPORT_STS)?
++    /// Renewed license-account tickets go back into the license session.
++    pub fn save_license_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
++        if let Some((key, mut session)) = self.session_for(Identity::License)? {
+             session.tokens.insert(address, token);
+-            return Self::write_verified(
+-                &*self.persistent,
+-                keys::USER_SESSION,
+-                &serde_json::to_vec(&session)?,
+-            );
++            return self.write_session(key, &session);
+         }
+         Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
+     }
+@@ -168,18 +196,41 @@ impl TokenManager {
              .ok_or(TokenStoreError::NotFound)
      }
  
@@ -570,7 +608,7 @@ index 6f14da1..3fac961 100644
              return Ok(session.user);
          }
          let bytes = self
-@@ -189,6 +243,11 @@ impl TokenManager {
+@@ -189,6 +240,11 @@ impl TokenManager {
          Ok(serde_json::from_slice(&bytes)?)
      }
  
@@ -582,7 +620,7 @@ index 6f14da1..3fac961 100644
      pub fn save_user(&self, user: &User) -> Result<(), TokenStoreError> {
          Self::write_verified(
              &*self.persistent,
-@@ -198,12 +257,32 @@ impl TokenManager {
+@@ -198,12 +254,32 @@ impl TokenManager {
      }
  
      fn user_session(&self) -> Result<Option<UserSession>, TokenStoreError> {
@@ -616,7 +654,7 @@ index 6f14da1..3fac961 100644
      /// Publish a newly authenticated account and its complete token set using
      /// one keyring value. Never merge tokens belonging to the previous account.
      /// Legacy entries remain readable until the first successful session save.
-@@ -211,16 +290,35 @@ impl TokenManager {
+@@ -211,16 +287,90 @@ impl TokenManager {
          &self,
          user: User,
          tokens: HashMap<String, Token>,
@@ -653,11 +691,66 @@ index 6f14da1..3fac961 100644
 -            keys::USER_SESSION,
 -            &serde_json::to_vec(&session)?,
 -        )
-+        Self::write_verified(&*self.persistent, key, &serde_json::to_vec(&session)?)
++        self.write_session(key, &session)
++    }
++
++    /// Write a session. A license session is also kept in the saved-accounts
++    /// list so signing out or switching never forgets the account.
++    fn write_session(&self, key: &str, session: &UserSession) -> Result<(), TokenStoreError> {
++        Self::write_verified(&*self.persistent, key, &serde_json::to_vec(session)?)?;
++        if key == keys::USER_SESSION {
++            let _ = self.saved_put(session);
++        }
++        Ok(())
++    }
++
++    fn saved_read(&self) -> Result<HashMap<String, UserSession>, TokenStoreError> {
++        match self.persistent.get(keys::SAVED_ACCOUNTS)? {
++            Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
++            None => Ok(HashMap::new()),
++        }
++    }
++
++    fn saved_put(&self, session: &UserSession) -> Result<(), TokenStoreError> {
++        let mut all = self.saved_read()?;
++        all.insert(
++            session.user.username.clone(),
++            UserSession { user: User { puid: session.user.puid.clone(), username: session.user.username.clone() }, tokens: session.tokens.clone() },
++        );
++        Self::write_verified(&*self.persistent, keys::SAVED_ACCOUNTS, &serde_json::to_vec(&all)?)
++    }
++
++    /// Saved Store/Game Pass accounts, sorted by name.
++    pub fn saved_accounts(&self) -> Result<Vec<String>, TokenStoreError> {
++        let mut names: Vec<String> = self.saved_read()?.into_keys().collect();
++        names.sort();
++        Ok(names)
++    }
++
++    /// Make a saved account the active license account without a new sign-in.
++    /// The account being replaced keeps its (possibly renewed) session.
++    pub fn activate_saved_account(&self, username: &str) -> Result<(), TokenStoreError> {
++        let all = self.saved_read()?;
++        let target = all.get(username).ok_or(TokenStoreError::NotFound)?;
++        if let Some(current) = self.user_session()? {
++            let _ = self.saved_put(&current);
++        }
++        Self::write_verified(&*self.persistent, keys::USER_SESSION, &serde_json::to_vec(target)?)
++    }
++
++    /// Forget a saved account. If it is the active one it is signed out too.
++    pub fn forget_saved_account(&self, username: &str) -> Result<(), TokenStoreError> {
++        let mut all = self.saved_read()?;
++        all.remove(username);
++        Self::write_verified(&*self.persistent, keys::SAVED_ACCOUNTS, &serde_json::to_vec(&all)?)?;
++        if self.user_session()?.is_some_and(|s| s.user.username == username) {
++            self.persistent.remove(keys::USER_SESSION)?;
++        }
++        Ok(())
      }
  
      // ---- Ephemeral XSTS-by-relying-party cache --------------------------------
-@@ -296,3 +394,100 @@ impl TokenManager {
+@@ -296,3 +446,139 @@ impl TokenManager {
          Self::write_verified(backend, key, &serde_json::to_vec(&TokenStore { tokens })?)
      }
  }
@@ -756,5 +849,44 @@ index 6f14da1..3fac961 100644
 +        let (user, _) = account("player");
 +        assert!(manager.save_player_session(user, HashMap::new()).is_err());
 +        assert!(manager.get_player_user().unwrap().is_none());
++    }
++}
++
++#[cfg(test)]
++mod credential_saved_accounts_tests {
++    use super::*;
++    fn save(m: &TokenManager, name: &str) {
++        m.save_user_session(User { puid: name.into(), username: name.into() },
++            HashMap::from([(PASSPORT_STS.into(), Token::Compact(format!("ticket-{name}")))])).unwrap();
++    }
++    #[test]
++    fn credential_saved_accounts_keep_every_signed_in_license_account() {
++        let m = TokenManager::with_memory();
++        save(&m, "castlevania"); save(&m, "gamepass");
++        assert_eq!(m.saved_accounts().unwrap(), vec!["castlevania".to_string(), "gamepass".to_string()]);
++        assert_eq!(m.get_license_user().unwrap().username, "gamepass");
++    }
++    #[test]
++    fn credential_saved_accounts_switch_without_losing_the_previous_one() {
++        let m = TokenManager::with_memory();
++        save(&m, "castlevania"); save(&m, "gamepass");
++        m.activate_saved_account("castlevania").unwrap();
++        assert_eq!(m.get_license_user().unwrap().username, "castlevania");
++        m.activate_saved_account("gamepass").unwrap();
++        assert_eq!(m.get_license_user().unwrap().username, "gamepass");
++        assert_eq!(m.saved_accounts().unwrap().len(), 2);
++        assert!(m.activate_saved_account("missing").is_err());
++    }
++    #[test]
++    fn credential_saved_accounts_survive_sign_out_and_can_be_forgotten() {
++        let m = TokenManager::with_memory();
++        save(&m, "castlevania");
++        m.remove_persistent().unwrap();
++        assert!(m.get_license_user().is_err());
++        assert_eq!(m.saved_accounts().unwrap(), vec!["castlevania".to_string()]);
++        m.activate_saved_account("castlevania").unwrap();
++        m.forget_saved_account("castlevania").unwrap();
++        assert!(m.saved_accounts().unwrap().is_empty());
++        assert!(m.get_license_user().is_err());
 +    }
 +}
