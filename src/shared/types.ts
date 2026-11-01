@@ -24,6 +24,7 @@ export interface BackendCapabilities {
   offlineLaunch?: boolean;
   /** `login --player` / `logout --player`: a second, separate Xbox player account. */
   playerAccount?: boolean;
+  licenseProfile?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;
@@ -41,6 +42,7 @@ export interface AuthStatus {
   player?: string;
   gamertag?: string;
   avatarDataUrl?: string;
+  licenseAvatarDataUrl?: string;
   subscription?: GamePassSubscription;
   lastResult?: 'success' | 'failed';
   lastAction?: 'login' | 'logout';

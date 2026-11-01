@@ -246,6 +246,7 @@ let gameUpdateJob: Promise<void> | undefined;
 let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 let shortcuts: GameShortcuts;
 let accountProfile: AccountProfile;
+let licenseProfile: AccountProfile | undefined;
 let preparingLaunch = false;
 let preparingInstall = false;
 let preparingContent = false;
@@ -317,7 +318,7 @@ function snapshot(): AppSnapshot {
     downloads: structuredClone(store.downloads.map(task => downloadCancellations.has(task.id)
       ? { ...task, cancelling: true, canPause: false, phase: 'Cancelling download and checking files…' } : task)),
     settings: structuredClone(store.settings),
-    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, subscription: accountProfile?.value?.subscription }),
+    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: accountProfile?.value?.subscription }),
     launcherUpdate: structuredClone(launcherUpdater.state),
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
@@ -513,6 +514,8 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
       status.capabilities.achievements ? status.binaryPath : undefined);
     await accountProfile?.select(authState.stored === true ? authState.player ?? authState.username : undefined,
       status.capabilities.profile ? status.binaryPath : undefined, emit);
+    await licenseProfile?.select(authState.stored === true && authState.player ? authState.username : undefined,
+      status.capabilities.licenseProfile ? status.binaryPath : undefined, emit);
   }, () => key === accountRefreshKey() && (!authState.running || afterAuth));
   if (emit) emitSnapshot();
   return structuredClone(authState);
@@ -633,6 +636,7 @@ async function runAuth(command: 'login' | 'logout', player = false): Promise<voi
     const view = fallbackAuthViewFactory(request => authViewFactory(mainWindow ?? undefined, undefined, request, nativeText), () => browserAuthViewFactory());
     if (shutdownStarted) throw Error('The launcher is closing.');
     await accountProfile.select(undefined);
+    await licenseProfile?.select(undefined);
     if (shutdownStarted) throw Error('The launcher is closing.');
     const tracked = command === 'login' ? (player ? startAuthTransport(binary, view, process.env, undefined, true) : startAuthTransport(binary, view))
       // Explicit sign-out removes the local device registration too. Ordinary
@@ -2264,7 +2268,7 @@ app.whenReady().then(async () => {
   nativeSocialShutdown.push(async()=>{clearInterval(partyInvitesTimer);await voiceHost.shutdown();});
 
   downloadCleanup = new DownloadCleanup(app.getPath('userData'));
-  accountProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, dataUrl => {
+  const normalizeAvatar = (dataUrl: string): string | undefined => {
     try {
       const picture = nativeImage.createFromDataURL(dataUrl);
       if (picture.isEmpty()) return;
@@ -2273,7 +2277,9 @@ app.whenReady().then(async () => {
       const scale = Math.min(1, 256 / Math.max(width, height));
       return picture.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: 'best' }).toDataURL();
     } catch { return undefined; }
-  });
+  };
+  accountProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, normalizeAvatar);
+  licenseProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, normalizeAvatar, undefined, true);
   launcherUpdater = new LauncherUpdater(app.getVersion(), app.isPackaged ? process.env.APPIMAGE : undefined, app.getPath('userData'), scheduleSnapshot);
   await launcherUpdater.initialize();
   const dataHome = process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
@@ -2429,6 +2435,7 @@ app.on('before-quit', (event) => {
   installQueue.stop();
   accountLibrary.reset();
   accountProfile?.cancel();
+  licenseProfile?.cancel();
   accountRefresh.invalidate();
   if (shutdownStarted || (!xboxNativeSocial && nativeSocialShutdown.length===0 && !xboxSocial.busy && !walletUnlocker.busy && !backendDiagnostics?.pendingWrites && !authJob && !preparingInstall && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0 && gameInviteBridges.size === 0 && !checkingGameUpdates && !launcherUpdater?.state.updating)) return;
   event.preventDefault();

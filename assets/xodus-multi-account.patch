@@ -74,12 +74,61 @@ index 2c4fe4b..47077ea 100644
          return ExitCode::FAILURE;
      }
 diff --git a/crates/xodus-cli/src/commands/profile.rs b/crates/xodus-cli/src/commands/profile.rs
-index 8816af7..c57afdd 100644
+index 8816af7..c96e54a 100644
 --- a/crates/xodus-cli/src/commands/profile.rs
 +++ b/crates/xodus-cli/src/commands/profile.rs
-@@ -130,8 +130,11 @@ async fn profile(tokens: &TokenManager) -> Result<Value, &'static str> {
+@@ -78,9 +78,15 @@ pub(super) fn invalidate_social_session(tokens:&TokenManager){
+ }
  
- pub async fn run(tokens: &TokenManager, json_output: bool) -> ExitCode {
+ pub(super) async fn xbox_session_for(tokens: &TokenManager, audience: &str) -> Result<(reqwest::Client, String, String, Option<String>), &'static str> {
++    xbox_session_role(tokens, audience, false).await
++}
++
++/// `license` selects the Store/Game Pass account instead of the player account.
++async fn xbox_session_role(tokens: &TokenManager, audience: &str, license: bool) -> Result<(reqwest::Client, String, String, Option<String>), &'static str> {
+     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+         .timeout(super::session::REQUEST_TIMEOUT).user_agent("xodus-nexus-profile/1").build().map_err(|_| "http-client")?;
+-    let (account, device, user) = super::session::prepare(tokens, &client).await.map_err(|stage| {
++    let prepared = if license { super::session::prepare_license(tokens, &client).await } else { super::session::prepare(tokens, &client).await };
++    let (account, device, user) = prepared.map_err(|stage| {
+         super::session::diagnostic(stage); stage
+     })?;
+     let cache_key=social_cache_key(&account,&user,audience)?;
+@@ -110,11 +116,11 @@ pub(super) async fn xbox_session_for(tokens: &TokenManager, audience: &str) -> R
+     Ok((client, authorization, account, identity))
+ }
+ 
+-async fn profile(tokens: &TokenManager) -> Result<Value, &'static str> {
+-    let (client, authorization, account) = xbox_session(tokens).await?;
++async fn profile(tokens: &TokenManager, license: bool) -> Result<Value, &'static str> {
++    let (client, authorization, account, _) = xbox_session_role(tokens, "http://xboxlive.com", license).await?;
+     let response = client.get(PROFILE).header("Authorization", authorization)
+         .header("x-xbl-contract-version", "2").send().await.map_err(|_| "profile-request")?;
+-    if response.status().as_u16()==401{invalidate_social_session(tokens);}
++    if response.status().as_u16()==401 && !license {invalidate_social_session(tokens);}
+     let body = bounded(response, 128 * 1024).await?;
+     let (gamertag, picture) = fields(&serde_json::from_slice(&body).map_err(|_| "profile-json")?)?;
+     // Fresh request, no Authorization/Signature or redirects to the image CDN.
+@@ -124,21 +130,33 @@ async fn profile(tokens: &TokenManager) -> Result<Value, &'static str> {
+             Err(_) => None,
+         }
+     } else { None };
+-    if tokens.get_user().map_err(|_| "account-changed")?.username != account { return Err("account-changed"); }
++    let current = if license { tokens.get_license_user() } else { tokens.get_user() };
++    if current.map_err(|_| "account-changed")?.username != account { return Err("account-changed"); }
+     Ok(json!({ "schema": 1, "account": account, "gamertag": gamertag, "gamerpicDataUrl": image }))
+ }
+ 
+-pub async fn run(tokens: &TokenManager, json_output: bool) -> ExitCode {
++pub async fn run(tokens: &TokenManager, json_output: bool, license: bool) -> ExitCode {
++    if license {
++        // Gamertag and picture of the Store/Game Pass account only; no membership lookup.
++        return match tokio::time::timeout(Duration::from_secs(45), profile(tokens, true)).await {
++            Ok(Ok(value)) => { if json_output { println!("{value}"); } else { println!("{}", value["gamertag"].as_str().unwrap_or_default()); } ExitCode::SUCCESS }
++            Ok(Err(stage)) => { eprintln!("Xbox profile is temporarily unavailable ({stage}); stored account is unchanged."); ExitCode::FAILURE }
++            Err(_) => { eprintln!("Xbox profile request timed out; stored account is unchanged."); ExitCode::FAILURE }
++        };
++    }
      let account = tokens.get_user().ok().map(|user|user.username);
 +    // Game Pass membership belongs to the license account, which is the player
 +    // account unless a separate one is stored.
@@ -90,6 +139,14 @@ index 8816af7..c57afdd 100644
              Some(account) => super::subscription::lookup(tokens, account).await,
              None => json!({"status":"unknown"}),
          }
+     };
+     // Independent optional membership lookup must not delay the profile request
+     // beyond its existing deadline or trigger interactive authentication.
+-    let (result, subscription) = tokio::join!(tokio::time::timeout(Duration::from_secs(45), profile(tokens)), membership);
++    let (result, subscription) = tokio::join!(tokio::time::timeout(Duration::from_secs(45), profile(tokens, false)), membership);
+     match result {
+         Ok(Ok(mut value)) => {
+             if value["account"].as_str() == account.as_deref() { value["subscription"] = subscription; }
 diff --git a/crates/xodus-cli/src/commands/session.rs b/crates/xodus-cli/src/commands/session.rs
 index 3626970..ce3b1ac 100644
 --- a/crates/xodus-cli/src/commands/session.rs
@@ -250,10 +307,20 @@ index 04e59f5..b159a8f 100644
      let Token::Legacy(legacy) = user_token else {
          return Err(other("Unspported user token".to_string()));
 diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
-index 80eea13..c2a16cc 100644
+index 80eea13..d9c9e60 100644
 --- a/crates/xodus-cli/src/main.rs
 +++ b/crates/xodus-cli/src/main.rs
-@@ -124,10 +124,15 @@ enum SubCommand {
+@@ -94,6 +94,9 @@ enum SubCommand {
+     Profile {
+         #[arg(long, default_value_t = false)]
+         json: bool,
++        /// Read the profile of the Store/Game Pass (license) account.
++        #[arg(long, default_value_t = false)]
++        license: bool,
+     },
+     #[command(about = "Extended native Nexus social services") ]
+     NativeSocial {
+@@ -124,10 +127,15 @@ enum SubCommand {
          #[arg(long, default_value = "US")]
          market: String,
      },
@@ -270,7 +337,7 @@ index 80eea13..c2a16cc 100644
      },
      #[command(about = "Download and extract the game through streaming algorithm")]
      #[command(after_help = "Nexus capabilities: update-recovery-v1")]
-@@ -387,16 +392,18 @@ async fn main() -> ExitCode {
+@@ -387,16 +395,18 @@ async fn main() -> ExitCode {
              .await
          }
          SubCommand::Library { json, market } => commands::library::run(&tokens, json, market).await,
@@ -297,7 +364,7 @@ index 80eea13..c2a16cc 100644
                  } else {
                      println!("{}", user.username);
                  }
-@@ -404,7 +411,11 @@ async fn main() -> ExitCode {
+@@ -404,7 +414,11 @@ async fn main() -> ExitCode {
              }
              Err(xodus::tokens::store::TokenStoreError::NotFound) => {
                  if json {
@@ -310,7 +377,13 @@ index 80eea13..c2a16cc 100644
                  } else {
                      println!("No stored Microsoft account");
                  }
-@@ -420,8 +431,8 @@ async fn main() -> ExitCode {
+@@ -415,13 +429,13 @@ async fn main() -> ExitCode {
+                 ExitCode::FAILURE
+             }
+         },
+-        SubCommand::Profile { json } => commands::profile::run(&tokens, json).await,
++        SubCommand::Profile { json, license } => commands::profile::run(&tokens, json, license).await,
+         SubCommand::NativeSocial { action } => commands::native_social::run(&tokens,action).await,
          SubCommand::Social { .. } => commands::social::run(&tokens).await,
          SubCommand::GameActivity { title_id, json } => commands::game_activity::run(&tokens, title_id, json).await,
          SubCommand::Achievements { title_id, json } => commands::achievements::run(&tokens, title_id, json).await,
