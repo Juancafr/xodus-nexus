@@ -1,0 +1,687 @@
+diff --git a/crates/xodus-cli/src/commands/library.rs b/crates/xodus-cli/src/commands/library.rs
+index 8cf87c6..036d110 100644
+--- a/crates/xodus-cli/src/commands/library.rs
++++ b/crates/xodus-cli/src/commands/library.rs
+@@ -103,7 +103,7 @@ async fn query(tokens: &TokenManager, market: &str) -> Result<Value, &'static st
+     if market.len() != 2 || !market.bytes().all(|b| b.is_ascii_uppercase()) {
+         return Err("market");
+     }
+-    let account = tokens.get_user().map_err(|_| "stored-account")?.username;
++    let account = tokens.get_license_user().map_err(|_| "stored-account")?.username;
+     let (client, ticket) = super::subscription::store_session(tokens, &account).await?;
+     let mut all = Entitlements::default();
+     let mut continuation: Option<String> = None;
+@@ -158,7 +158,7 @@ async fn query(tokens: &TokenManager, market: &str) -> Result<Value, &'static st
+         let page: Value = serde_json::from_slice(&bytes).map_err(|_| "entitlements-json")?;
+         all.add(&page)?;
+         if continuation.is_none() {
+-            if tokens.get_user().map_err(|_| "account-check")?.username != account {
++            if tokens.get_license_user().map_err(|_| "account-check")?.username != account {
+                 return Err("account-changed");
+             }
+             all.finish();
+diff --git a/crates/xodus-cli/src/commands/login.rs b/crates/xodus-cli/src/commands/login.rs
+index e28daff..261c8dd 100644
+--- a/crates/xodus-cli/src/commands/login.rs
++++ b/crates/xodus-cli/src/commands/login.rs
+@@ -10,7 +10,9 @@ pub(super) const CLIENT_ID: &str = "000000004424da1f";
+ const LOGIN_MARKET: &str = "en-US";
+ const USER_AUTH_SCOPE: &str = "scope=service::user.auth.xboxlive.com::MBI_SSL&api-version=2.0";
+ 
+-pub async fn run(client: &reqwest::Client, tokens: &TokenManager) -> ExitCode {
++/// `player` signs in the separate Xbox player account instead of the account
++/// that owns the games or subscription.
++pub async fn run(client: &reqwest::Client, tokens: &TokenManager, player: bool) -> ExitCode {
+     super::subscription::clear();
+     let token = match tokens.get_device_sts_token() {
+         Ok(token) => token,
+@@ -70,7 +72,12 @@ pub async fn run(client: &reqwest::Client, tokens: &TokenManager) -> ExitCode {
+         };
+         issued.insert(address, token);
+     }
+-    if let Err(error) = tokens.save_user_session(user, issued) {
++    let saved = if player {
++        tokens.save_player_session(user, issued)
++    } else {
++        tokens.save_user_session(user, issued)
++    };
++    if let Err(error) = saved {
+         error.report();
+         return ExitCode::FAILURE;
+     }
+diff --git a/crates/xodus-cli/src/commands/logout.rs b/crates/xodus-cli/src/commands/logout.rs
+index 2c4fe4b..47077ea 100644
+--- a/crates/xodus-cli/src/commands/logout.rs
++++ b/crates/xodus-cli/src/commands/logout.rs
+@@ -1,8 +1,18 @@
+ use std::process::ExitCode;
+ use xodus::tokens::TokenManager;
+ 
+-pub async fn run(tokens: &TokenManager, device: bool) -> ExitCode {
++pub async fn run(tokens: &TokenManager, device: bool, player: bool) -> ExitCode {
+     super::subscription::clear();
++    if player {
++        // Only the player account. The license account and device stay as they are.
++        return match tokens.remove_player() {
++            Ok(()) => ExitCode::SUCCESS,
++            Err(err) => {
++                tracing::error!("Failed to sign out the player account {err}");
++                ExitCode::FAILURE
++            }
++        };
++    }
+     if device && tokens.remove_device_license().is_err() {
+         return ExitCode::FAILURE;
+     }
+diff --git a/crates/xodus-cli/src/commands/profile.rs b/crates/xodus-cli/src/commands/profile.rs
+index 8816af7..c57afdd 100644
+--- a/crates/xodus-cli/src/commands/profile.rs
++++ b/crates/xodus-cli/src/commands/profile.rs
+@@ -130,8 +130,11 @@ async fn profile(tokens: &TokenManager) -> Result<Value, &'static str> {
+ 
+ pub async fn run(tokens: &TokenManager, json_output: bool) -> ExitCode {
+     let account = tokens.get_user().ok().map(|user|user.username);
++    // Game Pass membership belongs to the license account, which is the player
++    // account unless a separate one is stored.
++    let license_account = tokens.get_license_user().ok().map(|user|user.username);
+     let membership = async {
+-        match account.as_deref() {
++        match license_account.as_deref() {
+             Some(account) => super::subscription::lookup(tokens, account).await,
+             None => json!({"status":"unknown"}),
+         }
+diff --git a/crates/xodus-cli/src/commands/session.rs b/crates/xodus-cli/src/commands/session.rs
+index 3626970..ce3b1ac 100644
+--- a/crates/xodus-cli/src/commands/session.rs
++++ b/crates/xodus-cli/src/commands/session.rs
+@@ -13,17 +13,67 @@ pub fn diagnostic(stage: &'static str) {
+     eprintln!("NEXUS_SESSION_DIAGNOSTIC_V1 {stage}");
+ }
+ 
++/// Which stored account a session is prepared for. `Xbox` is the player
++/// (Xbox Live profile, social, saves). `License` owns the games or the
++/// subscription (Store ticket, library, membership). Without a separate player
++/// account both are the same account.
++#[derive(Clone, Copy)]
++pub enum Role {
++    License,
++    Xbox,
++}
++
++impl Role {
++    fn user(self, tokens: &TokenManager) -> Result<xodus::models::secrets::User, xodus::tokens::store::TokenStoreError> {
++        match self {
++            Role::License => tokens.get_license_user(),
++            Role::Xbox => tokens.get_user(),
++        }
++    }
++
++    fn token(self, tokens: &TokenManager) -> Result<Token, xodus::tokens::store::TokenStoreError> {
++        match self {
++            Role::License => tokens.get_license_sts_token(),
++            Role::Xbox => tokens.get_user_sts_token(),
++        }
++    }
++}
++
+ pub async fn prepare(
+     tokens: &TokenManager,
+     client: &reqwest::Client,
+ ) -> Result<(String, LegacyToken, LegacyToken), &'static str> {
+-    prepare_with(tokens, || async {
++    prepare_for(Role::Xbox, tokens, || async {
++        xodus::tokens::device::refresh_existing_device_credentials(client, tokens).await
++    })
++    .await
++}
++
++/// Same as `prepare`, for the account that owns the games or subscription.
++pub async fn prepare_license(
++    tokens: &TokenManager,
++    client: &reqwest::Client,
++) -> Result<(String, LegacyToken, LegacyToken), &'static str> {
++    prepare_for(Role::License, tokens, || async {
+         xodus::tokens::device::refresh_existing_device_credentials(client, tokens).await
+     })
+     .await
+ }
+ 
++#[cfg(test)]
+ async fn prepare_with<F, Fut>(
++    tokens: &TokenManager,
++    refresh: F,
++) -> Result<(String, LegacyToken, LegacyToken), &'static str>
++where
++    F: FnMut() -> Fut,
++    Fut: Future<Output = Result<(), xodus::tokens::store::TokenStoreError>>,
++{
++    prepare_for(Role::Xbox, tokens, refresh).await
++}
++
++async fn prepare_for<F, Fut>(
++    role: Role,
+     tokens: &TokenManager,
+     mut refresh: F,
+ ) -> Result<(String, LegacyToken, LegacyToken), &'static str>
+@@ -31,9 +81,9 @@ where
+     F: FnMut() -> Fut,
+     Fut: Future<Output = Result<(), xodus::tokens::store::TokenStoreError>>,
+ {
+-    let account = tokens.get_user().map_err(|_| "stored-account")?.username;
+-    let user = tokens
+-        .get_user_sts_token()
++    let account = role.user(tokens).map_err(|_| "stored-account")?.username;
++    let user = role
++        .token(tokens)
+         .map_err(|_| "session-user-unavailable")?;
+     match session::state(&user, chrono::Utc::now()) {
+         State::Expired => return Err("session-user-expired"),
+@@ -60,8 +110,8 @@ where
+             .await
+             .map_err(|_| "session-device-refresh-failed")?;
+     }
+-    if tokens
+-        .get_user()
++    if role
++        .user(tokens)
+         .map_err(|_| "session-account-changed")?
+         .username
+         != account
+diff --git a/crates/xodus-cli/src/commands/subscription.rs b/crates/xodus-cli/src/commands/subscription.rs
+index 9f4cdd5..672a370 100644
+--- a/crates/xodus-cli/src/commands/subscription.rs
++++ b/crates/xodus-cli/src/commands/subscription.rs
+@@ -101,7 +101,7 @@ pub(super) async fn store_session(
+     tokens: &TokenManager,
+     account: &str,
+ ) -> Result<(reqwest::Client, String), &'static str> {
+-    if tokens.get_user().map_err(|_| "stored-account")?.username != account {
++    if tokens.get_license_user().map_err(|_| "stored-account")?.username != account {
+         return Err("account-changed");
+     }
+     let client = reqwest::Client::builder()
+@@ -110,7 +110,7 @@ pub(super) async fn store_session(
+         .user_agent("Xodus-Nexus-membership/0.2.3")
+         .build()
+         .map_err(|_| "http-client")?;
+-    let (selected, device, user) = super::session::prepare(tokens, &client).await.map_err(|stage| {
++    let (selected, device, user) = super::session::prepare_license(tokens, &client).await.map_err(|stage| {
+         super::session::diagnostic(stage); stage
+     })?;
+     if selected != account { return Err("account-changed"); }
+@@ -133,7 +133,7 @@ pub(super) async fn store_session(
+     .await
+     .map_err(|error| super::session::classify(&error))
+     }).await?;
+-    if tokens.get_user().map_err(|_| "account-check")?.username != account { return Err("account-changed"); }
++    if tokens.get_license_user().map_err(|_| "account-check")?.username != account { return Err("account-changed"); }
+     if let Some(stage) = super::session::rejection(&outcome) { return Err(stage); }
+     let token: Token = match outcome {
+         ExchangeUserTokenOutcome::Issued(
+@@ -187,7 +187,7 @@ async fn query(tokens: &TokenManager, account: &str) -> Result<(Value, i64), &'s
+         }
+         bytes.extend_from_slice(&chunk);
+     }
+-    if tokens.get_user().map_err(|_| "account-check")?.username != account {
++    if tokens.get_license_user().map_err(|_| "account-check")?.username != account {
+         return Err("account-changed");
+     }
+     let body: Value = serde_json::from_slice(&bytes).map_err(|_| "membership-json")?;
+diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
+index 04e59f5..b159a8f 100644
+--- a/crates/xodus-cli/src/license.rs
++++ b/crates/xodus-cli/src/license.rs
+@@ -91,7 +91,7 @@ pub async fn get_license(
+     cache: Option<&Path>,
+     offline: bool,
+ ) -> std::result::Result<(DeviceKey, SPLicense), String> {
+-    let user = tokens.get_user().map_err(|error| error.to_string())?;
++    let user = tokens.get_license_user().map_err(|error| error.to_string())?;
+     let holder = holder(tokens, &user);
+     if offline {
+         // Skip the ticket and license requests and their connect timeouts;
+@@ -308,7 +308,7 @@ async fn fetch_online(
+         return Err(other("Invalid STS token".to_string()));
+     };
+     let user_token = tokens
+-        .get_user_sts_token()
++        .get_license_sts_token()
+         .map_err(|error| other(error.to_string()))?;
+     let Token::Legacy(legacy) = user_token else {
+         return Err(other("Unspported user token".to_string()));
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index 80eea13..c2a16cc 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -124,10 +124,15 @@ enum SubCommand {
+         #[arg(long, default_value = "US")]
+         market: String,
+     },
+-    Login,
++    Login {
++        #[arg(long, default_value_t = false, help = "Sign in the Xbox player account instead of the license account")]
++        player: bool,
++    },
+     Logout {
+         #[arg(long, default_value_t = false, help = "Remove device license")]
+         device: bool,
++        #[arg(long, default_value_t = false, help = "Sign out only the Xbox player account")]
++        player: bool,
+     },
+     #[command(about = "Download and extract the game through streaming algorithm")]
+     #[command(after_help = "Nexus capabilities: update-recovery-v1")]
+@@ -387,16 +392,18 @@ async fn main() -> ExitCode {
+             .await
+         }
+         SubCommand::Library { json, market } => commands::library::run(&tokens, json, market).await,
+-        SubCommand::Account { json } => match tokens.get_user() {
++        SubCommand::Account { json } => match tokens.get_license_user() {
+             Ok(user) => {
+                 if json {
+-                    println!(
+-                        "{}",
+-                        serde_json::json!({
+-                            "stored": true,
+-                            "username": user.username,
+-                        })
+-                    );
++                    // "player" appears only when a separate Xbox player account is stored.
++                    let mut value = serde_json::json!({
++                        "stored": true,
++                        "username": user.username,
++                    });
++                    if let Ok(Some(player)) = tokens.get_player_user() {
++                        value["player"] = serde_json::json!({ "username": player.username });
++                    }
++                    println!("{value}");
+                 } else {
+                     println!("{}", user.username);
+                 }
+@@ -404,7 +411,11 @@ async fn main() -> ExitCode {
+             }
+             Err(xodus::tokens::store::TokenStoreError::NotFound) => {
+                 if json {
+-                    println!("{}", serde_json::json!({ "stored": false }));
++                    let mut value = serde_json::json!({ "stored": false });
++                    if let Ok(Some(player)) = tokens.get_player_user() {
++                        value["player"] = serde_json::json!({ "username": player.username });
++                    }
++                    println!("{value}");
+                 } else {
+                     println!("No stored Microsoft account");
+                 }
+@@ -420,8 +431,8 @@ async fn main() -> ExitCode {
+         SubCommand::Social { .. } => commands::social::run(&tokens).await,
+         SubCommand::GameActivity { title_id, json } => commands::game_activity::run(&tokens, title_id, json).await,
+         SubCommand::Achievements { title_id, json } => commands::achievements::run(&tokens, title_id, json).await,
+-        SubCommand::Login => commands::login::run(&client, &tokens).await,
+-        SubCommand::Logout { device } => commands::logout::run(&tokens, device).await,
++        SubCommand::Login { player } => commands::login::run(&client, &tokens, player).await,
++        SubCommand::Logout { device, player } => commands::logout::run(&tokens, device, player).await,
+         SubCommand::Extract {
+             path,
+             destination,
+diff --git a/crates/xodus-cli/src/package.rs b/crates/xodus-cli/src/package.rs
+index 1b88d7a..89f62ad 100644
+--- a/crates/xodus-cli/src/package.rs
++++ b/crates/xodus-cli/src/package.rs
+@@ -24,7 +24,7 @@ pub async fn get_packages(
+     let Token::Legacy(dev_token) = dev_token else {
+         return Err(Box::new(std::io::Error::other("Invalid STS token")));
+     };
+-    let user_token = tokens.get_user_sts_token()?;
++    let user_token = tokens.get_license_sts_token()?;
+     let Token::Legacy(legacy) = user_token else {
+         return Err(Box::new(std::io::Error::other("Unsupported user token")));
+     };
+diff --git a/crates/xodus-service/src/store_license.rs b/crates/xodus-service/src/store_license.rs
+index e6b4c58..3c00d7b 100644
+--- a/crates/xodus-service/src/store_license.rs
++++ b/crates/xodus-service/src/store_license.rs
+@@ -56,8 +56,8 @@ pub async fn handle(context: &SimpleContext, body: &[u8]) -> StoreLicenseTokenRe
+ 
+ async fn issue(context: &SimpleContext, request: StoreLicenseTokenRequest) -> Result<String, u32> {
+     let device = context.device_token.as_ref().ok_or(DENIED)?.clone();
+-    let Token::Legacy(user_sts) = context.tokens().get_user_sts_token().map_err(|_| DENIED)? else { return Err(DENIED) };
+-    let account = context.tokens().get_user().map_err(|_| DENIED)?;
++    let Token::Legacy(user_sts) = context.tokens().get_license_sts_token().map_err(|_| DENIED)? else { return Err(DENIED) };
++    let account = context.tokens().get_license_user().map_err(|_| DENIED)?;
+     // Same genuine MSA audience/client used by upstream's content licensing.
+     let client_id = "{d6d5a677-0872-4ab0-9442-bb792fce85c5}";
+     let device_response = xodus::api::live::exchange_device_token(&context.client, device.clone(),
+diff --git a/crates/xodus-service/src/store_updates.rs b/crates/xodus-service/src/store_updates.rs
+index 25de30a..f2cd3a5 100644
+--- a/crates/xodus-service/src/store_updates.rs
++++ b/crates/xodus-service/src/store_updates.rs
+@@ -105,7 +105,7 @@ async fn check(context: &SimpleContext, request: Request) -> Result<String, Chec
+     let id = content_ids.pop().ok_or(FAIL)?;
+     if id.len() != 36 || !id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') { return Err(FAIL.into()); }
+     let device = context.device_token.clone().ok_or(DENIED)?;
+-    let Token::Legacy(user) = context.tokens().get_user_sts_token().map_err(|_| DENIED)? else { return Err(DENIED.into()); };
++    let Token::Legacy(user) = context.tokens().get_license_sts_token().map_err(|_| DENIED)? else { return Err(DENIED.into()); };
+     let client = context.client.clone();
+     // Reuse upstream download authentication, but contain its panic-based errors
+     // in a task so a failed Xbox request cannot terminate this service.
+diff --git a/crates/xodus/src/auth.rs b/crates/xodus/src/auth.rs
+index 16aa046..2a09942 100644
+--- a/crates/xodus/src/auth.rs
++++ b/crates/xodus/src/auth.rs
+@@ -110,7 +110,7 @@ pub async fn do_sisu(
+     ),
+     Box<dyn std::error::Error>,
+ > {
+-    let Token::Legacy(token) = manager.get_user_sts_token()? else {
++    let Token::Legacy(token) = manager.get_license_sts_token()? else {
+         return Err(Box::new(std::io::Error::new(
+             std::io::ErrorKind::BrokenPipe,
+             "error",
+@@ -160,7 +160,7 @@ pub async fn do_sisu(
+ 
+     let (user_token, refreshed) = sisu_user_tokens(user_token)?;
+     if let Some((address, sts)) = refreshed {
+-        if let Err(err) = manager.save_user_token(address, sts) {
++        if let Err(err) = manager.save_license_token(address, sts) {
+             tracing::warn!("Failed to persist refreshed STS token: {err}");
+         }
+     }
+diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
+index 6f14da1..3fac961 100644
+--- a/crates/xodus/src/tokens/manager.rs
++++ b/crates/xodus/src/tokens/manager.rs
+@@ -13,6 +13,17 @@ mod keys {
+     pub const USER_TOKENS: &str = "user-tokens";
+     pub const USER_INFO: &str = "user-DA";
+     pub const USER_SESSION: &str = "user-session";
++    pub const PLAYER_SESSION: &str = "player-session";
++}
++
++/// Which stored account answers a request. `License` is the account that owns
++/// the games or the subscription. `Xbox` is the player: the account Xbox Live
++/// sees in game, for profile, achievements, social and cloud saves. Without a
++/// separate player account both are the same account, as before.
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Identity {
++    License,
++    Xbox,
+ }
+ 
+ #[derive(serde::Serialize, serde::Deserialize)]
+@@ -144,42 +155,85 @@ impl TokenManager {
+ 
+     // ---- User STS tokens (keyed by SOAP "applies_to" address) --------------
+ 
++    /// Xbox identity (the player when one is stored, otherwise the license account).
+     pub fn get_user_token_for(&self, address: &str) -> Result<Option<Token>, TokenStoreError> {
+-        if let Some(session) = self.user_session()? {
++        self.token_for(Identity::Xbox, address)
++    }
++
++    /// License identity: the account that owns the games or the subscription.
++    pub fn get_license_token_for(&self, address: &str) -> Result<Option<Token>, TokenStoreError> {
++        self.token_for(Identity::License, address)
++    }
++
++    fn token_for(&self, who: Identity, address: &str) -> Result<Option<Token>, TokenStoreError> {
++        if let Some((_, session)) = self.session_for(who)? {
+             return Ok(session.tokens.get(address).cloned());
+         }
+         Self::read_token_store(&*self.persistent, keys::USER_TOKENS, address)
+     }
+ 
++    /// Renewed tickets go back into the session they were read from.
+     pub fn save_user_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
+-        if let Some(mut session) = self.user_session()? {
++        if let Some((key, mut session)) = self.session_for(Identity::Xbox)? {
+             session.tokens.insert(address, token);
+             return Self::write_verified(
+                 &*self.persistent,
+-                keys::USER_SESSION,
++                key,
+                 &serde_json::to_vec(&session)?,
+             );
+         }
+         Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
+     }
+ 
++    /// Renewed license-account tickets go back into the license session.
++    pub fn save_license_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
++        if let Some((key, mut session)) = self.session_for(Identity::License)? {
++            session.tokens.insert(address, token);
++            return Self::write_verified(&*self.persistent, key, &serde_json::to_vec(&session)?);
++        }
++        Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
++    }
++
+     pub fn get_user_sts_token(&self) -> Result<Token, TokenStoreError> {
+         self.get_user_token_for(PASSPORT_STS)?
+             .ok_or(TokenStoreError::NotFound)
+     }
+ 
++    pub fn get_license_sts_token(&self) -> Result<Token, TokenStoreError> {
++        self.get_license_token_for(PASSPORT_STS)?
++            .ok_or(TokenStoreError::NotFound)
++    }
++
+     // ---- User info -----------------------------------------------------------
+ 
+     /// An atomic authenticated user/token pair from the single session record.
+     /// Legacy independent entries are not sufficient for identity projection.
+     pub fn get_user_sts_session(&self) -> Result<Option<(User, Token)>, TokenStoreError> {
+-        let Some(mut session) = self.user_session()? else { return Ok(None) };
++        self.sts_session_for(Identity::Xbox)
++    }
++
++    pub fn get_license_sts_session(&self) -> Result<Option<(User, Token)>, TokenStoreError> {
++        self.sts_session_for(Identity::License)
++    }
++
++    fn sts_session_for(&self, who: Identity) -> Result<Option<(User, Token)>, TokenStoreError> {
++        let Some((_, mut session)) = self.session_for(who)? else { return Ok(None) };
+         let token = session.tokens.remove(PASSPORT_STS).ok_or(TokenStoreError::NotFound)?;
+         Ok(Some((session.user, token)))
+     }
+ 
++    /// Xbox identity: the player when one is stored, otherwise the license account.
+     pub fn get_user(&self) -> Result<User, TokenStoreError> {
+-        if let Some(session) = self.user_session()? {
++        self.user_for(Identity::Xbox)
++    }
++
++    /// The account that owns the games or the subscription.
++    pub fn get_license_user(&self) -> Result<User, TokenStoreError> {
++        self.user_for(Identity::License)
++    }
++
++    fn user_for(&self, who: Identity) -> Result<User, TokenStoreError> {
++        if let Some((_, session)) = self.session_for(who)? {
+             return Ok(session.user);
+         }
+         let bytes = self
+@@ -189,6 +243,11 @@ impl TokenManager {
+         Ok(serde_json::from_slice(&bytes)?)
+     }
+ 
++    /// The separate player account, if one is stored.
++    pub fn get_player_user(&self) -> Result<Option<User>, TokenStoreError> {
++        Ok(self.read_session(keys::PLAYER_SESSION)?.map(|session| session.user))
++    }
++
+     pub fn save_user(&self, user: &User) -> Result<(), TokenStoreError> {
+         Self::write_verified(
+             &*self.persistent,
+@@ -198,12 +257,32 @@ impl TokenManager {
+     }
+ 
+     fn user_session(&self) -> Result<Option<UserSession>, TokenStoreError> {
++        self.read_session(keys::USER_SESSION)
++    }
++
++    fn read_session(&self, key: &str) -> Result<Option<UserSession>, TokenStoreError> {
+         self.persistent
+-            .get(keys::USER_SESSION)?
++            .get(key)?
+             .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+             .transpose()
+     }
+ 
++    /// The stored session that answers for `who`, with the key it lives under.
++    /// The player account answers only for the Xbox identity.
++    fn session_for(
++        &self,
++        who: Identity,
++    ) -> Result<Option<(&'static str, UserSession)>, TokenStoreError> {
++        if who == Identity::Xbox {
++            if let Some(session) = self.read_session(keys::PLAYER_SESSION)? {
++                return Ok(Some((keys::PLAYER_SESSION, session)));
++            }
++        }
++        Ok(self
++            .user_session()?
++            .map(|session| (keys::USER_SESSION, session)))
++    }
++
+     /// Publish a newly authenticated account and its complete token set using
+     /// one keyring value. Never merge tokens belonging to the previous account.
+     /// Legacy entries remain readable until the first successful session save.
+@@ -211,16 +290,35 @@ impl TokenManager {
+         &self,
+         user: User,
+         tokens: HashMap<String, Token>,
++    ) -> Result<(), TokenStoreError> {
++        self.save_session(keys::USER_SESSION, user, tokens)
++    }
++
++    /// Publish the player account. It never touches the license account.
++    pub fn save_player_session(
++        &self,
++        user: User,
++        tokens: HashMap<String, Token>,
++    ) -> Result<(), TokenStoreError> {
++        self.save_session(keys::PLAYER_SESSION, user, tokens)
++    }
++
++    /// Remove only the player account. The license account stays signed in.
++    pub fn remove_player(&self) -> Result<(), TokenStoreError> {
++        self.persistent.remove(keys::PLAYER_SESSION)
++    }
++
++    fn save_session(
++        &self,
++        key: &str,
++        user: User,
++        tokens: HashMap<String, Token>,
+     ) -> Result<(), TokenStoreError> {
+         if tokens.is_empty() || user.username.trim().is_empty() || user.puid.is_empty() {
+             return Err(TokenStoreError::NotFound);
+         }
+         let session = UserSession { user, tokens };
+-        Self::write_verified(
+-            &*self.persistent,
+-            keys::USER_SESSION,
+-            &serde_json::to_vec(&session)?,
+-        )
++        Self::write_verified(&*self.persistent, key, &serde_json::to_vec(&session)?)
+     }
+ 
+     // ---- Ephemeral XSTS-by-relying-party cache --------------------------------
+@@ -296,3 +394,100 @@ impl TokenManager {
+         Self::write_verified(backend, key, &serde_json::to_vec(&TokenStore { tokens })?)
+     }
+ }
++
++#[cfg(test)]
++mod credential_player_identity_tests {
++    use super::*;
++
++    fn account(name: &str) -> (User, HashMap<String, Token>) {
++        (
++            User { puid: format!("puid-{name}"), username: name.into() },
++            HashMap::from([(PASSPORT_STS.into(), Token::Compact(format!("ticket-{name}")))]),
++        )
++    }
++
++    fn ticket(token: Token) -> String {
++        match token {
++            Token::Compact(value) => value,
++            _ => panic!("unexpected token kind"),
++        }
++    }
++
++    #[test]
++    fn without_a_player_both_identities_are_the_license_account() {
++        let manager = TokenManager::with_memory();
++        let (user, tokens) = account("owner");
++        manager.save_user_session(user, tokens).unwrap();
++        assert_eq!(manager.get_user().unwrap().username, "owner");
++        assert_eq!(manager.get_license_user().unwrap().username, "owner");
++        assert!(manager.get_player_user().unwrap().is_none());
++    }
++
++    #[test]
++    fn the_player_answers_for_xbox_and_the_owner_for_licenses() {
++        let manager = TokenManager::with_memory();
++        let (user, tokens) = account("owner");
++        manager.save_user_session(user, tokens).unwrap();
++        let (user, tokens) = account("player");
++        manager.save_player_session(user, tokens).unwrap();
++        assert_eq!(manager.get_user().unwrap().username, "player");
++        assert_eq!(manager.get_license_user().unwrap().username, "owner");
++        assert_eq!(manager.get_player_user().unwrap().unwrap().username, "player");
++        assert_eq!(ticket(manager.get_user_sts_token().unwrap()), "ticket-player");
++        assert_eq!(ticket(manager.get_license_sts_token().unwrap()), "ticket-owner");
++        let (user, token) = manager.get_license_sts_session().unwrap().unwrap();
++        assert_eq!((user.username.as_str(), ticket(token).as_str()), ("owner", "ticket-owner"));
++    }
++
++    #[test]
++    fn a_renewed_ticket_goes_back_to_the_session_it_was_read_from() {
++        let manager = TokenManager::with_memory();
++        let (user, tokens) = account("owner");
++        manager.save_user_session(user, tokens).unwrap();
++        let (user, tokens) = account("player");
++        manager.save_player_session(user, tokens).unwrap();
++        manager
++            .save_user_token(PASSPORT_STS.into(), Token::Compact("renewed".into()))
++            .unwrap();
++        assert_eq!(ticket(manager.get_user_sts_token().unwrap()), "renewed");
++        assert_eq!(ticket(manager.get_license_sts_token().unwrap()), "ticket-owner");
++    }
++
++    #[test]
++    fn signing_out_one_account_keeps_the_other() {
++        let manager = TokenManager::with_memory();
++        let (user, tokens) = account("owner");
++        manager.save_user_session(user, tokens).unwrap();
++        let (user, tokens) = account("player");
++        manager.save_player_session(user, tokens).unwrap();
++        manager.remove_player().unwrap();
++        assert!(manager.get_player_user().unwrap().is_none());
++        assert_eq!(manager.get_user().unwrap().username, "owner");
++        let (user, tokens) = account("player");
++        manager.save_player_session(user, tokens).unwrap();
++        manager.remove_persistent().unwrap();
++        assert!(manager.get_license_user().is_err());
++        assert_eq!(manager.get_player_user().unwrap().unwrap().username, "player");
++    }
++
++    #[test]
++    fn a_player_without_a_license_account_has_no_license_identity() {
++        let manager = TokenManager::with_memory();
++        let (user, tokens) = account("player");
++        manager.save_player_session(user, tokens).unwrap();
++        assert!(manager.get_license_sts_token().is_err());
++        assert_eq!(manager.get_user().unwrap().username, "player");
++    }
++
++    #[test]
++    fn a_player_session_needs_a_real_account_and_tickets() {
++        let manager = TokenManager::with_memory();
++        let (_, tokens) = account("player");
++        assert!(manager
++            .save_player_session(User { puid: "x".into(), username: " ".into() }, tokens)
++            .is_err());
++        let (user, _) = account("player");
++        assert!(manager.save_player_session(user, HashMap::new()).is_err());
++        assert!(manager.get_player_user().unwrap().is_none());
++    }
++}
