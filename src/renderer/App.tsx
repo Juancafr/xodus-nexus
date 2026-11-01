@@ -97,11 +97,11 @@ function AccountMembership({ auth }: { auth: AppSnapshot['auth'] }) {
   return auth.stored === true ? null : <small>{auth.stored === false ? ui("ui.not_signed_in_491fc91") : ui("ui.status_unavailable_7eb5af9")}</small>;
 }
 
-function AccountAvatar({ auth, large = false }: { auth: AppSnapshot['auth']; large?: boolean }) {
+function AccountAvatar({ auth, large = false, generic = false }: { auth: AppSnapshot['auth']; large?: boolean; generic?: boolean }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [auth.avatarDataUrl]);
   return <div className={`account-avatar${large ? ' large' : ''}`}>
-    {auth.avatarDataUrl && !failed ? <img src={auth.avatarDataUrl} alt={ui("ui.xbox_profile_picture_f6ca315")} onError={() => setFailed(true)} /> : <CircleUserRound />}
+    {!generic && auth.avatarDataUrl && !failed ? <img src={auth.avatarDataUrl} alt={ui("ui.xbox_profile_picture_f6ca315")} onError={() => setFailed(true)} /> : <CircleUserRound />}
   </div>;
 }
 
@@ -947,7 +947,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     </section>
 
     <section className="settings-card account-card">
-      <div className="settings-heading"><AccountAvatar auth={data.auth} large /><div><span className="overline">{ui("ui.microsoft_account_90f90f6")}</span><h2>{(data.auth.player ? data.auth.username : data.auth.gamertag ?? data.auth.username) ?? (data.auth.stored === false ? ui("ui.not_signed_in_491fc91") : ui("ui.account_status_unavailable_3b97a47"))}</h2><p>{data.auth.stored === true ? ui("ui.credentials_stored_by_xodus_bca3867") : ui("ui.authentication_uses_the_original_xodus_webview_cf2dcb9")}</p></div><span className={`status-label ${data.auth.stored === true ? 'ready' : data.auth.stored === false ? 'off' : 'unknown'}`}><StatusDot tone={data.auth.stored === true ? 'green' : data.auth.stored === false ? 'red' : 'amber'} />{data.auth.stored === true ? ui("ui.stored_1afc73e") : data.auth.stored === false ? ui("ui.signed_out_db8436b") : ui("ui.unknown_2375999")}</span></div>
+      <div className="settings-heading"><AccountAvatar auth={data.auth} large generic={Boolean(data.auth.player)} /><div><span className="overline">{ui("ui.microsoft_account_90f90f6")}</span><h2>{(data.auth.player ? data.auth.username : data.auth.gamertag ?? data.auth.username) ?? (data.auth.stored === false ? ui("ui.not_signed_in_491fc91") : ui("ui.account_status_unavailable_3b97a47"))}</h2><p>{data.auth.stored === true ? ui("ui.credentials_stored_by_xodus_bca3867") : ui("ui.authentication_uses_the_original_xodus_webview_cf2dcb9")}</p></div><span className={`status-label ${data.auth.stored === true ? 'ready' : data.auth.stored === false ? 'off' : 'unknown'}`}><StatusDot tone={data.auth.stored === true ? 'green' : data.auth.stored === false ? 'red' : 'amber'} />{data.auth.stored === true ? ui("ui.stored_1afc73e") : data.auth.stored === false ? ui("ui.signed_out_db8436b") : ui("ui.unknown_2375999")}</span></div>
       <div className="account-note"><CircleAlert /><span>{uiText(data.auth.note)}</span></div>
       <KeyringSetup compact disabled={data.auth.running} />
       <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), ui("ui.xodus_sign_in_completed_8240737"))}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? ui("ui.sign_in_again_51fbe1d") : ui("ui.sign_in_with_xodus_252572f")}</button><button className="secondary" disabled={!caps.logout || data.auth.running || data.auth.stored === false} title={ui("ui.remove_saved_sign_in_credentials_and_local_devic_6485324")} onClick={() => invoke('logout', () => window.launcher.logout(), ui("ui.saved_sign_in_credentials_and_local_device_regis_c9738bd"))}>{ui("ui.sign_out_48f0d3d")}</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />{ui("ui.refresh_status_442c4b8")}</button></div>
@@ -955,7 +955,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     </section>
 
     {caps.playerAccount && data.auth.stored === true ? <section className="settings-card account-card">
-      <div className="settings-heading"><div><span className="overline">{ui("ui.xbox_player_account_021c236")}</span><h2>{data.auth.player ? (data.auth.gamertag ? `${data.auth.gamertag} · ${data.auth.player}` : data.auth.player) : ui("ui.no_separate_player_account_44980b5")}</h2><p>{ui("ui.player_account_help_1d6f365")}</p></div></div>
+      <div className="settings-heading">{data.auth.player ? <AccountAvatar auth={data.auth} large /> : null}<div><span className="overline">{ui("ui.xbox_player_account_021c236")}</span><h2>{data.auth.player ? (data.auth.gamertag ? `${data.auth.gamertag} · ${data.auth.player}` : data.auth.player) : ui("ui.no_separate_player_account_44980b5")}</h2><p>{ui("ui.player_account_help_1d6f365")}</p></div></div>
       <div className="button-row">
         <button className="primary" disabled={data.auth.running} onClick={() => invoke('login-player', () => window.launcher.login(true), ui("ui.player_account_signed_in_ac36aa2"))}>{ui("ui.sign_in_player_account_c15aa58")}</button>
         {data.auth.player ? <button className="secondary" disabled={data.auth.running} onClick={() => invoke('logout-player', () => window.launcher.logout(true), ui("ui.player_account_signed_out_6752e8f"))}>{ui("ui.sign_out_player_account_013bd34")}</button> : null}
