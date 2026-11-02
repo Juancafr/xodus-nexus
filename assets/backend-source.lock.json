@@ -5,7 +5,7 @@
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v76",
+  "patchId": "linux-run-v77",
   "compatibility": "linux-run-v25",
   "patches": [
     {
@@ -315,6 +315,10 @@
     {
       "file": "xodus-multi-account.patch",
       "sha256": "e8e26d9c1c2c9d0c58e219d0026e539a74d39ffc9e80d5be9239ffbfca46f797"
+    },
+    {
+      "file": "xodus-achievements-reason.patch",
+      "sha256": "af17f08a8850708bf4c2d8b761fc104bbe98f322f29422f14d56a7416b521215"
     }
   ]
 }
