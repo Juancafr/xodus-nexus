@@ -644,6 +644,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
   const [editLocale, setEditLocale] = useState('');
   const [editTools, setEditTools] = useState<GameLaunchTools>({ ...defaultLaunchTools });
   const [localeOptions, setLocaleOptions] = useState<string[]>([]);
+  const [editAccount, setEditAccount] = useState('');
   const localeRequest = useRef(0);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [diagnosticLog, setDiagnosticLog] = useState<{ log: DiagnosticLog; operationId: string }>();
@@ -719,6 +720,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     setMenu(undefined);
     setEditTitle(game.title);
     setEditLocale(game.locale ?? '');
+    setEditAccount(game.licenseAccount ?? '');
     setEditTools({ ...defaultLaunchTools, ...game.launchTools });
     setLocaleOptions([]);
     const request = ++localeRequest.current;
@@ -733,7 +735,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     if (!dialogGame) return;
     setDialogBusy(true);
     try {
-      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools) });
+      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), licenseAccount: editAccount });
       toast({ kind: 'success', message: ui("ui.game_settings_saved_7f466a5") });
       setDialogGame(undefined);
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
@@ -843,6 +845,12 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
         <h2>{ui("ui.game_settings_fece860")}</h2>
         <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
+        {data.backend.capabilities.savedAccounts && (data.auth.saved?.length ?? 0) > 0 ? <label>{ui("ui.game_store_account_5b1d9e4")}
+          <select value={editAccount} onChange={(event) => setEditAccount(event.target.value)}>
+            <option value="">{ui("ui.game_store_account_auto_8c42a7f")}</option>
+            {data.auth.saved!.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label> : null}
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}

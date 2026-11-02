@@ -1154,6 +1154,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch,
     licenseCache, offlineLaunch && Boolean(licenseCache && backend.current.capabilities.offlineLaunch));
   const operationId = `game-${id}`;
+  const accountAtLaunch = authState.username;
   const logDirectory = path.join(dataRoot, 'logs');
   const logPath = path.join(logDirectory, `${id}-latest.log`);
   await fs.mkdir(logDirectory, { recursive: true });
@@ -1347,6 +1348,10 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       addGameLog(`The Xodus process exited with code ${result.code}.`);
       if (!gameOperation || gameOperation.id !== operationId) return;
       gameOperation.finishedAt = new Date().toISOString();
+      if (result.code === 0 && accountAtLaunch && !game.licenseAccount) {
+        // First clean run of a game with no recorded Store account: remember the account that worked.
+        void store.patchGame(id, { licenseAccount: accountAtLaunch }).then(() => emitSnapshot()).catch(() => {});
+      }
       if (result.code === 0 || gameOperation.status === 'stopping') {
         gameOperation.status = 'complete';
         gameOperation.phase = result.code === 0 ? 'The game has exited.' : 'The game was stopped. Forced shutdown may leave unsynchronized saves.';
@@ -1948,6 +1953,9 @@ function registerIpc(): void {
       const game = store.games.find((entry) => entry.id === id);
       if (!game) throw new Error('Game not found.');
       allowed.locale = supportedGameLocale(patch.locale) ?? '';
+    }
+    if (typeof patch.licenseAccount === 'string') {
+      allowed.licenseAccount = patch.licenseAccount && savedAccounts.includes(patch.licenseAccount) ? patch.licenseAccount : undefined;
     }
     const game = await store.patchGame(id, allowed);
     emitSnapshot();
