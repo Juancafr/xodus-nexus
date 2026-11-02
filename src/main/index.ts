@@ -827,7 +827,11 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
     if (shutdownStarted || isCancelled()) return;
     await store.updateDownload(id, { status: 'running', phase: updateGame ? 'Checking installed files with Xodus…' : 'Starting Xodus streaming…' });
     if (shutdownStarted || isCancelled()) return;
-    await runDownload(task, binary, market, updateGame, content);
+    // Keep the display awake while a download runs: letting the screen turn off in Gaming Mode
+    // during a long download has been reported to kill the launcher with SIGBUS.
+    const releaseDownloadDisplay = gameDisplay.acquire();
+    try { await runDownload(task, binary, market, updateGame, content); }
+    finally { releaseDownloadDisplay(); }
   }, failed: async error => {
     if (isCancelled()) return;
     task.status = 'failed'; task.error = (error as Error).message; task.phase = 'Installation could not be started';

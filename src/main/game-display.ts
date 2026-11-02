@@ -3,7 +3,7 @@ interface PowerBlocker {
   stop(id: number): boolean;
 }
 
-/** Hold only while a game runs. No fake input or persistent power-policy changes. */
+/** Hold only while a game runs or a download is in progress. No fake input or persistent power-policy changes. */
 export class GameDisplayBlocker {
   private readonly releases = new Set<() => void>();
   constructor(private readonly blocker: PowerBlocker, private readonly warn: (message: string) => void = console.warn) {}
