@@ -1102,12 +1102,16 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
   }
   if (await refreshIncompleteUpdate(game)) { emitSnapshot(); throw Error(INCOMPLETE_UPDATE_MESSAGE); }
-  if (game.licenseAccount && authState.username && game.licenseAccount !== authState.username
-      && savedAccounts.includes(game.licenseAccount) && backend.current.binaryPath && backend.current.capabilities.savedAccounts) {
-    // The game was installed with another saved Store account: use that one, no sign-in needed.
-    await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
-    accountRefresh.invalidate();
-    await refreshAccount(false, true);
+  if (game.licenseAccount && game.licenseAccount !== authState.username
+      && backend.current.binaryPath && backend.current.capabilities.savedAccounts) {
+    // The game uses another saved Store account: switch to it, no sign-in needed. This does not rely on
+    // the cached account state, which is not loaded yet when a Steam shortcut (Gaming Mode) starts the
+    // launcher straight into a game. If the account is no longer saved, the normal launch continues.
+    try {
+      await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+      accountRefresh.invalidate();
+      await refreshAccount(false, true);
+    } catch { /* keep the active account */ }
   }
   const inspected = await inspectGameDirectory(game.path);
   await store.patchGame(id, {
