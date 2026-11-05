@@ -22,6 +22,10 @@ export interface BackendCapabilities {
   offlinePc?: boolean;
   /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
   offlineLaunch?: boolean;
+  /** `login --player` / `logout --player`: a second, separate Xbox player account. */
+  playerAccount?: boolean;
+  licenseProfile?: boolean;
+  savedAccounts?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;
@@ -35,8 +39,12 @@ export interface AuthStatus {
   running: boolean;
   stored: boolean | null;
   username?: string;
+  /** Separate Xbox player account, when the backend stores one next to the license account. */
+  player?: string;
   gamertag?: string;
   avatarDataUrl?: string;
+  licenseAvatarDataUrl?: string;
+  saved?: string[];
   subscription?: GamePassSubscription;
   lastResult?: 'success' | 'failed';
   lastAction?: 'login' | 'logout';
@@ -112,6 +120,7 @@ export interface Game {
   publisher?: string;
   installedVersion?: string;
   packageName?: string;
+  licenseAccount?: string; // Store account the game was installed with.
   executable?: string;
   winePath?: string; // Legacy saved field; ignored for launch. The runtime is global.
   launchArgs?: string;
@@ -385,6 +394,8 @@ export interface GameAchievement {
 
 export interface GameAchievements {
   status: 'available' | 'unavailable' | 'unsupported' | 'signed-out' | 'error';
+  /** Fixed failure stage reported by the backend (status 'error' only). */
+  reason?: string;
   items?: GameAchievement[];
   partial?: boolean;
 }
@@ -580,8 +591,10 @@ export interface LauncherApi {
   readBackendDiagnosticLog(): Promise<DiagnosticLog>;
   createDiagnosticReport(gameId?: string): Promise<DiagnosticReport>;
   saveDiagnosticReport(content: string): Promise<boolean>;
-  login(): Promise<void>;
-  logout(): Promise<void>;
+  login(player?: boolean): Promise<void>;
+  logout(player?: boolean): Promise<void>;
+  useAccount(name: string): Promise<void>;
+  forgetAccount(name: string): Promise<void>;
   offlinePermissions(): Promise<OfflinePermissions>;
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
@@ -599,7 +612,7 @@ export interface LauncherApi {
   removeDownload(id: string): Promise<void>;
   clearFinishedDownloads(): Promise<void>;
   importGame(path?: string): Promise<Game | null>;
-  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools'>>): Promise<Game>;
+  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools' | 'licenseAccount'>>): Promise<Game>;
   getGameLocales(id: string): Promise<string[]>;
   removeGame(id: string, mode: 'library' | 'delete-files'): Promise<void>;
   getGameLaunchOptions(id: string): Promise<GameLaunchOptions>;
