@@ -1298,6 +1298,16 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       environment.XODUS_BRIDGE_PORT = String(serviceSession.bridgePort);
       environment.XODUS_BRIDGE_KEY = serviceSession.bridgeKey;
       environment.XODUS_SAVE_SYNC = 'auto';
+      // One-shot recovery: a file named force-save-upload in the user data folder makes this single
+      // launch upload the local saves over the cloud copy. The file is removed first so it never repeats.
+      try {
+        const marker = path.join(app.getPath('userData'), 'force-save-upload');
+        if (readFileSync(marker, 'utf8') !== undefined) {
+          await fs.rm(marker, { force: true });
+          environment.XODUS_SAVE_SYNC = 'upload';
+          addGameLog('One-shot recovery: local saves will overwrite the cloud copy in this launch.');
+        }
+      } catch { /* No marker: normal automatic sync. */ }
       addGameLog('Xbox cloud save preview is enabled. Saves may download from and upload to the account cloud.');
     }
     const inviteRuntime=await gameInviteRuntime(wine);
